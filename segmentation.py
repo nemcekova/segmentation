@@ -1,5 +1,7 @@
 import time
 from os import listdir
+
+import imutils as imutils
 from numpy import asarray
 import numpy as np
 import cv2
@@ -8,6 +10,7 @@ from matplotlib import pyplot
 import re
 from skimage import filters
 from sklearn import metrics
+from skimage import morphology
 
 import widthMeasures
 
@@ -39,7 +42,47 @@ def preprocessing(img):
     pyplot.show()"""
 
     return normalized, img_grey.shape
+def rotateBound(image, angle):
+    (h, w) = image.shape[:2]
+    (cX, cY) = (w // 2, h // 2)
 
+    M = cv2.getRotationMatrix2D((cX, cY), -angle, 1.0)
+    cos = np.abs(M[0,0])
+    sin = np.abs(M[0,1])
+
+    nW = int((h * sin) + (w * cos))
+    nH = int((h * cos) + (w * sin))
+
+    M[0, 2] += (nW / 2) - cX
+    M[1, 2] += (nH / 2) - cY
+
+    return cv2.warpAffine(image, M, (nW, nH))
+
+def preprocessingMorphology(img):
+    SE = np.array([[0,0,0,0,0,0,0],
+                   [0,0,0,0,0,0,0],
+                   [0,0,0,0,0,0,0],
+                   [1,1,1,1,1,1,1],
+                   [0,0,0,0,0,0,0],
+                   [0,0,0,0,0,0,0],
+                   [0,0,0,0,0,0,0]], dtype=np.uint8)
+
+
+
+    img_grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    preprocessed = morphology.opening(img_grey, morphology.square(5))
+    #preprocessed = morphology.reconstruction(preprocessed, np.cos(img_grey))
+    tophat = np.zeros(img_grey.shape)
+    for angle in np.arange(0, 360, 30):
+        rotated = imutils.rotate(SE, angle)
+        preprocessed = morphology.black_tophat(preprocessed, rotated) #disc(12)
+        tophat += preprocessed
+
+    preprocessed = filters.gaussian(tophat, 5)
+    pyplot.imshow(preprocessed)
+    pyplot.show()
+
+    return preprocessed, img_grey.shape
 
 def normalization(img):
     """normalization"""
@@ -69,7 +112,7 @@ def kmeans(img, grey_shape):
     """kmeans"""
     vectorized = np.float32(img)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 300, 1.0)
-    k = 5
+    k = 2
     attempts = 1
     retval, labels, centers = cv2.kmeans(vectorized, k, None, criteria, attempts, cv2.KMEANS_RANDOM_CENTERS)
     centers = np.uint8(centers)
@@ -154,13 +197,13 @@ for filename in listdir(path):
 
     prepocessed, grey_shape = preprocessing(img_data)
     segmented_image = kmeans(prepocessed, grey_shape)
-    final = postprocessing(segmented_image)
+    #final = postprocessing(segmented_image)
     #final1 = classification(final)
 
-    widthMeasures.main(final)
+    #widthMeasures.main(final)
 
-    pyplot.imshow(final)
-    pyplot.title(filename)
-    pyplot.show()
+    #pyplot.imshow(segmented_image)
+    #pyplot.title(filename)
+    #pyplot.show()
     #print(final)
-    #break
+    break
