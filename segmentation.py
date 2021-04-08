@@ -11,6 +11,7 @@ import re
 from skimage import filters
 from sklearn import metrics
 from skimage import morphology
+from skimage import exposure
 
 import widthMeasures
 
@@ -19,14 +20,6 @@ def preprocessing(img):
     img_grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     mask = backgroundMask(img_grey)
 
-    """MEAN FILTER"""
-    # kernel = np.ones((11,11), np.float32)/121
-    # conv = cv2.filter2D(img_grey, -1, kernel, borderType=cv2.BORDER_ISOLATED)
-
-    """GAUSSIAN FILTER"""
-    # kernel = cv2.getGaussianKernel(11, 11)
-    # conv = cv2.filter2D(img_grey, -1, kernel)
-    # conv = cv2.GaussianBlur(img_grey, (11, 11), 0)
     """MEDIAN FILTER"""
     conv = cv2.medianBlur(img_grey, 15)
 
@@ -34,29 +27,11 @@ def preprocessing(img):
     diff = cv2.subtract(conv, img_grey)
     masked_img = cv2.bitwise_and(diff, diff, mask=mask)
     normalized = normalization(masked_img)
-    """pyplot.imshow(masked_img)
-    pyplot.show()
-    mask0 = np.ones((3, 3), np.uint8)
-    opened = cv2.morphologyEx(normalized, cv2.MORPH_OPEN, mask0)
-    pyplot.imshow(opened)
-    pyplot.show()"""
 
-    return normalized, img_grey.shape
-def rotateBound(image, angle):
-    (h, w) = image.shape[:2]
-    (cX, cY) = (w // 2, h // 2)
 
-    M = cv2.getRotationMatrix2D((cX, cY), -angle, 1.0)
-    cos = np.abs(M[0,0])
-    sin = np.abs(M[0,1])
+    opened = morphology.opening(normalized)
 
-    nW = int((h * sin) + (w * cos))
-    nH = int((h * cos) + (w * sin))
-
-    M[0, 2] += (nW / 2) - cX
-    M[1, 2] += (nH / 2) - cY
-
-    return cv2.warpAffine(image, M, (nW, nH))
+    return opened, img_grey.shape
 
 def preprocessingMorphology(img):
     SE = np.array([[0,0,0,0,0,0,0],
@@ -70,19 +45,20 @@ def preprocessingMorphology(img):
 
 
     img_grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    mask = backgroundMask(img_grey)
     preprocessed = morphology.opening(img_grey, morphology.square(5))
     #preprocessed = morphology.reconstruction(preprocessed, np.cos(img_grey))
     tophat = np.zeros(img_grey.shape)
-    for angle in np.arange(0, 360, 30):
-        rotated = imutils.rotate(SE, angle)
-        preprocessed = morphology.black_tophat(preprocessed, rotated) #disc(12)
-        tophat += preprocessed
 
-    preprocessed = filters.gaussian(tophat, 5)
-    pyplot.imshow(preprocessed)
-    pyplot.show()
 
-    return preprocessed, img_grey.shape
+    preprocessed = morphology.black_tophat(preprocessed, morphology.disk(12))  # disc(12)
+    masked_img = cv2.bitwise_and(preprocessed,mask)
+    normalized = normalization(masked_img)
+    #preprocessed = filters.gaussian(preprocessed, 5)
+    #pyplot.imshow(normalized)
+    #pyplot.show()
+
+    return normalized, img_grey.shape
 
 def normalization(img):
     """normalization"""
@@ -112,7 +88,7 @@ def kmeans(img, grey_shape):
     """kmeans"""
     vectorized = np.float32(img)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 300, 1.0)
-    k = 2
+    k = 5
     attempts = 1
     retval, labels, centers = cv2.kmeans(vectorized, k, None, criteria, attempts, cv2.KMEANS_RANDOM_CENTERS)
     centers = np.uint8(centers)
@@ -125,7 +101,7 @@ def postprocessing(img):
     segmented_image1 = cv2.medianBlur(img, 3)
     segmented_image2 = cv2.GaussianBlur(segmented_image1, (5, 5), 0)
     mask0 = np.ones((3, 3), np.uint8)
-    final = cv2.morphologyEx(segmented_image2, cv2.MORPH_OPEN, mask0)
+    final = morphology.opening(segmented_image1, mask0)
     #final = cv2.erode(segmented_image2, mask0, iterations=0)
     #final1 = cv2.dilate(final, mask0, iterations=0)
     return final
@@ -187,6 +163,8 @@ def classification(img):
 path = '/Users/nemcekova/Documents/School/BP/databases/DRIVE/training/images'
 pathMasks = '/Users/nemcekova/Documents/School/BP/databases/DRIVE/training/mask'
 pathManual = '/Users/nemcekova/Documents/School/BP/databases/DRIVE/training/1st_manual'
+y_true = []
+y_pred = []
 for filename in listdir(path):
     img_data = image.imread(path + '/' + filename)
 
@@ -194,16 +172,30 @@ for filename in listdir(path):
     img_number = re.findall(r'\d+',filename)
     manual_name = [name for name in listdir(pathManual) if img_number[0] in name]
     manual = image.imread(pathManual + '/' + manual_name[0])
+    y_true.append(manual)
 
     prepocessed, grey_shape = preprocessing(img_data)
     segmented_image = kmeans(prepocessed, grey_shape)
-    #final = postprocessing(segmented_image)
+    final = postprocessing(segmented_image)
     #final1 = classification(final)
 
     #widthMeasures.main(final)
+    y_pred.append(final)
 
-    #pyplot.imshow(segmented_image)
-    #pyplot.title(filename)
-    #pyplot.show()
+    pyplot.imshow(final)
+    pyplot.title(filename)
+    pyplot.show()
     #print(final)
-    break
+    #break
+    """ print(manual)
+    print(final)
+    rounded_manual = np.argmax(manual, axis=1)
+    rounded_final = np.argmax(final, axis=1)
+    tn, fp, fn, tp = metrics.confusion_matrix(rounded_manual, final)"""
+
+    for truth, pred in zip(manual, final):
+        C = metrics.confusion_matrix(truth, pred)
+        #tn, fp, fn, tp
+        print(C)
+
+    #break
