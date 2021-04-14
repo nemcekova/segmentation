@@ -17,12 +17,8 @@ import classification
 
 def my_preprocessing(img):
     """Green channel extraction"""
-    img_grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    pyplot.imshow(img_grey)
-    pyplot.show()
+    #img_grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     img_grey = img[:,:,1]
-    pyplot.imshow(img_grey)
-    pyplot.show()
     mask = backgroundMask(img_grey)
 
     """MEDIAN FILTER"""
@@ -39,18 +35,23 @@ def my_preprocessing(img):
     return normalized, img_grey.shape
 
 def preprocessingMorphology(img):
-    img_grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    img_grey = img[:,:,1]
     mask = backgroundMask(img_grey)
     img_grey = cv2.bitwise_and(img_grey, mask)
-    #clahe = exposure.equalize_adapthist(img_grey)
-    median = filters.median(img_grey)
+    clahe = exposure.equalize_adapthist(img_grey)
+    """closed = morphology.closing(clahe, morphology.disk(8))
+    open = morphology.opening(closed, morphology.disk(8))
+    preprocessed = cv2.subtract(clahe, open)"""
+    preprocessed = morphology.black_tophat(clahe, morphology.disk(12))
+    normalized = normalization(preprocessed)
+    """median = filters.median(img_grey)
     preprocessed = morphology.opening(median, morphology.square(5))
     diff = cv2.subtract(median, img_grey)
     preprocessed = morphology.black_tophat(preprocessed, morphology.disk(12))
 
-    normalized = normalization(preprocessed)
+    normalized = normalization(preprocessed)"""
 
-    pyplot.imshow(preprocessed)
+    pyplot.imshow(clahe)
     pyplot.show()
 
     return normalized, img_grey.shape
@@ -79,11 +80,11 @@ def backgroundMask(inputImg):
     return th
 
 
-def kmeans(img, grey_shape):
+def kmeans(img, grey_shape, k):
     """kmeans"""
     vectorized = np.float32(img)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 300, 1.0)
-    k = 4
+    k = k
     attempts = 1
     retval, labels, centers = cv2.kmeans(vectorized, k, None, criteria, attempts, cv2.KMEANS_RANDOM_CENTERS)
     centers = np.uint8(centers)
@@ -93,27 +94,44 @@ def kmeans(img, grey_shape):
 
 def postprocessing(img, centers):
     """Post processing"""
-    """ T = int(sorted(centers)[1])
-    print(T)
-    ret, th = cv2.threshold(img, T, 255, cv2.THRESH_BINARY)
-    #th = morphology.opening(th, morphology.square(4))"""
     segmented_image1 = cv2.medianBlur(img, 3)
     segmented_image2 = cv2.GaussianBlur(segmented_image1, (5, 5), 0)
     mask0 = np.ones((3, 3), np.uint8)
     final = morphology.opening(segmented_image2, mask0)
-    pyplot.imshow(final)
-    pyplot.show()
-
-    #th = cv2.adaptiveThreshold(final,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV,5,2)
-    #th = morphology.closing(th)
+    """    pyplot.imshow(final)
+    pyplot.show()"""
 
     T = math.ceil(np.mean(final))
-    print(T)
     ret, th = cv2.threshold(final, T, 255, cv2.THRESH_BINARY)
     th = morphology.opening(th)
-    return th
+    return final
 
+def thickVessels(img):
+    img_grey = img[:, :, 1]
+    mask = backgroundMask(img_grey)
+    img_grey = cv2.bitwise_and(img_grey, mask)
+    clahe = exposure.equalize_adapthist(img_grey)
 
+    preprocessed = morphology.black_tophat(clahe, morphology.disk(12))
+    #preprocessed = filters.median(preprocessed, morphology.square(5))
+    normalized = normalization(preprocessed)
+
+    segmented_image, centers = kmeans(normalized, grey_shape, 3)
+
+    centers = np.sort(centers.flatten())
+
+    T = (int(centers[-2]) + int(centers[-1])) / 2
+    print(T)
+    print(int(centers[-2]))
+    ret, th = cv2.threshold(segmented_image, T, 255, cv2.THRESH_BINARY)
+    pyplot.imshow(th)
+    pyplot.show()
+    #opened = morphology.opening(th, morphology.square(2))
+    clean = classification.reduceNoise(th)
+    clean = morphology.dilation(clean)
+    pyplot.imshow(clean)
+    pyplot.show()
+    return clean
 
 path = './data/DRIVE/test/images/'
 
@@ -127,22 +145,22 @@ for filename in listdir(path):
 
 
     prepocessed, grey_shape = my_preprocessing(img_data)
-    segmented_image, centers = kmeans(prepocessed, grey_shape)
+    segmented_image, centers = kmeans(prepocessed, grey_shape, 5)
     final = postprocessing(segmented_image, centers)
     #final1 = classification(final)
 
     #widthMeasures.main(final)
 
-    #clahe = exposure.equalize_adapthist(final)
-    #clahe = clahe.astype(np.uint8)
-    #clahe = cv2.adaptiveThreshold(clahe,255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,5,2 )
-    pyplot.imshow(final)
+    pyplot.imshow(segmented_image)
     pyplot.title(filename)
     pyplot.show()
+
+    thick = thickVessels(img_data)
+    #thin = cv2.subtract(final, thick)
 
     result_dir = "/images"
     if result_dir not in os.getcwd():
         os.chdir(".." + result_dir)
-    cv2.imwrite(filename, final)
+    cv2.imwrite(filename, segmented_image)
 
-    #break
+    break
