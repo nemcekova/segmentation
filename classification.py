@@ -44,10 +44,10 @@ def classification(img):
                 loopX += 1
 
 def reduceNoise(img):
-    (winW, winH) = (12, 12)
+    (winW, winH) = (20, 20)
     highest = 0
 
-    for (x, y, window) in sliding_window(img, stepSize=9, windowSize=(winW, winH)):
+    for (x, y, window) in sliding_window(img, stepSize=16, windowSize=(winW, winH)):
 
         if window.shape[0] != winH or window.shape[1] != winW:
             continue
