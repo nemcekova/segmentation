@@ -9,6 +9,7 @@ from skimage import filters
 from sklearn import preprocessing
 from skimage import morphology
 from skimage import exposure
+from skimage import restoration
 import os
 import math
 
@@ -17,19 +18,16 @@ import classification
 
 def my_preprocessing(img):
     """Green channel extraction"""
-    img_grey = img[:,:,1]
-    mask = backgroundMask(img_grey)
+    img_grey = img[:, :, 1]
+    img_mask = img[:, :, 0]
+    mask = backgroundMask(img_mask)
+    masked = cv2.bitwise_and(img_grey, mask)
+    clahe = exposure.equalize_adapthist(masked)
+    tophat = morphology.black_tophat(clahe, morphology.disk(8))
+    tophat = matchedFilter(tophat)
+    #normalized = normalization(tophat)
 
-    """MEDIAN FILTER"""
-    conv = cv2.medianBlur(img_grey, 15)
-
-    diff = cv2.subtract(conv, img_grey)
-    masked_img = cv2.bitwise_and(diff, diff, mask=mask)
-    normalized = normalization(masked_img)
-
-    """    pyplot.imshow(opened)
-    pyplot.show()"""
-    return normalized, img_grey.shape
+    return tophat, img_grey.shape
 
 def preprocessingMorphology(img):
     img_grey = img[:,:,1]
@@ -79,6 +77,7 @@ def backgroundMask(inputImg):
 
 def kmeans(img, grey_shape, k):
     """kmeans"""
+    img = normalization(img)
     vectorized = np.float32(img)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 300, 1.0)
     k = k
@@ -89,13 +88,13 @@ def kmeans(img, grey_shape, k):
     segmented_image = segmented_data.reshape((grey_shape))
     return segmented_image, centers, labels
 
-def postprocessing(img, centers):
+def postprocessing(img):
     """Post processing"""
     segmented_image1 = cv2.medianBlur(img, 3)
     segmented_image2 = cv2.GaussianBlur(segmented_image1, (5, 5), 0)
     mask0 = np.ones((3, 3), np.uint8)
     final = morphology.opening(segmented_image2, mask0)
-    """    pyplot.imshow(final)
+    """pyplot.imshow(final)
     pyplot.show()"""
 
     T = math.ceil(np.mean(final))
@@ -103,82 +102,67 @@ def postprocessing(img, centers):
     th = morphology.opening(th)
     return th
 
-def thickVessels(img):
-    img_grey = img[:, :, 1]
-    mask = backgroundMask(img_grey)
-    img_grey = cv2.bitwise_and(img_grey, mask)
-    clahe = exposure.equalize_adapthist(img_grey)
+def matchedFilter(img):
+    s = 1.5 #sigma
+    L = 7 #lenght of piecewise element
 
-    preprocessed = morphology.black_tophat(clahe, morphology.disk(8))
-    normalized = normalization(preprocessed)
+    out = np.zeros(img.shape)
 
-    segmented_image, centers, labels = kmeans(normalized, img_grey.shape, 6)
+    m = max(math.ceil(3*s), (L-1)/2)
+    x_val = np.arange(-m, m)
+    y_val = np.arange(-m, m)
+    [x,y] = np.meshgrid(x_val, y_val)
 
-    centers = np.sort(centers.flatten())
-    T = int(centers[-2]) - 1
-    ret, th = cv2.threshold(segmented_image, T, 255, cv2.THRESH_BINARY)
+    for l in range(1, 13):
+        theta = 15 * (l - 1)
+        angle = theta / 180 * math.pi #in radians
+        u = math.cos(angle)*x - math.sin(angle)*y
+        v = math.sin(angle)*x + math.cos(angle)*y
+        N = (abs(u) <= 3*s) & (abs(v) <= L/2) #domain
+        k = np.exp((-u ** 2) / (2 * s ** 2)) #kernel
+        k = k - np.mean(k[N]) #y K:(x, y) = K,(x, y) - m, m, =sum K,(x, y)/A
+        #k[not N] = 0 # set kernel outside of domain to 0
+        #print(k)
+        res = cv2.filter2D(img, ddepth=-1, kernel=k, borderType=cv2.BORDER_CONSTANT)
+        out = np.maximum(out, res)
 
-    clean = classification.reduceNoise(th)
-    clean = morphology.dilation(clean)
+    return out
+
+def thickVessels(img, centers, shape):
+
+    sort = np.sort(centers.flatten())
+    """T = int(centers[-2]) - 1
+    ret, th = cv2.threshold(img, T, 255, cv2.THRESH_BINARY)"""
+
+    senior_class1 = sort[-1]
+    thick = np.where(segmented_image == senior_class1, 255, segmented_image)
+    thick = np.where(thick == 255, thick, 0)
+
+    #clean = classification.reduceNoise(thick)
+    clean = morphology.dilation(thick)
     opened = morphology.opening(clean, morphology.square(3))
-    """pyplot.imshow(opened)
-    pyplot.title("THICK")
-    pyplot.show()"""
+    #opened = morphology.erosion(opened)
+
     return opened
 
-def thinVessels(img):
-    img_grey = img[:, :, 1]
-    img_mask = img[:,:, 0]
-    mask = backgroundMask(img_mask)
-    masked = cv2.bitwise_and(img_grey, mask)
-    clahe = exposure.equalize_adapthist(masked)
-    """opened = morphology.opening(clahe, morphology.disk(8))
-    closed = morphology.closing(opened, morphology.disk(8))
-    tophat = clahe - closed"""
-    tophat = morphology.black_tophat(clahe, morphology.disk(8))
-    tophat = normalization(tophat)
-
-    segmented_image, centers, labels = kmeans(tophat, img_grey.shape, 6)
-    pyplot.imshow(segmented_image)
-    pyplot.show()
-
-    centers1 = centers.tolist()
-    sort = sorted(centers1)
-    senior_class1 = sort[-1]
-    senior_class2 = sort[-2]
-    #senior_class3 = sort[-3]
-
-    thick = np.where(segmented_image == senior_class1, 255, segmented_image)
-    thick = np.where(thick == senior_class2, 255, thick)
-    thick = np.where(thick == 255, thick, 0)
-    """pyplot.imshow(thick)
-    pyplot.show()"""
-
-    lowest_class0 = sort[0]
-    lowest_class = sort[1]
-    lowest_class2 = sort[2]
-    segmented = np.where(segmented_image == lowest_class0, 0, segmented_image)
-    segmented = np.where(segmented == lowest_class, 0, segmented)
-    thin = np.where(segmented == senior_class1, 0, segmented)
-    thin = np.where(thin == senior_class2, 0, thin)
-    #segmented2 = np.where(segmented == 0, 0, 255)
-    #thin = segmented.reshape(img_grey.shape)
-
-    frangis = filters.frangi(thin, sigmas=(1, 2.5, 0.5), black_ridges=False)
-
-    pyplot.imshow(frangis)
-    pyplot.title("thin")
-    pyplot.show()
+def thinVessels(img, centers, shape):
+    frangis = filters.frangi(img, sigmas=(0.5, 2.5, 0.5), alpha=0.5, beta=15, black_ridges=False)
     frangis = normalization(frangis)
-    frangis = frangis.reshape(img_grey.shape)
-    #ret, th = cv2.threshold(frangis, 1, 255, cv2.THRESH_BINARY)
-    pyplot.imshow(frangis)
-    pyplot.title("opened")
-    pyplot.show()
-    return thin
+    frangis = frangis.reshape(shape)
+    frangis = frangis.astype("uint8")
+    ret, th = cv2.threshold(frangis, 1, 255, cv2.THRESH_BINARY)
 
-def ClusterIndicesNumpy(clustNum, labels_array): #numpy
-    return np.where(labels_array == clustNum)[0]
+    pyplot.imshow(th)
+    pyplot.show()
+
+    image = morphology.closing(th)
+    image = morphology.opening(image)
+    pyplot.imshow(image)
+    pyplot.show()
+
+    return image
+
+
 path = './data/DRIVE/test/images/'
 
 for filename in listdir(path):
@@ -188,23 +172,27 @@ for filename in listdir(path):
         os.chdir("../../../")
         img_data = image.imread(path + filename)
 
+    prepocessed, grey_shape = my_preprocessing(img_data)
+    segmented_image, centers, labels = kmeans(prepocessed, grey_shape, 3)
+    thick = thickVessels(segmented_image, centers, grey_shape)
+    segmented_image1, centers1, labels1 = kmeans(prepocessed, grey_shape, 10)
+    final = thinVessels(segmented_image1, centers1, grey_shape)
 
-
-    #prepocessed, grey_shape = my_preprocessing(img_data)
-    #segmented_image, centers, labels = kmeans(prepocessed, grey_shape, 5)
-    #final = postprocessing(segmented_image, centers)
-
-    #thick = thickVessels(img_data)
-    thin = thinVessels(img_data)
-
-    """pyplot.imshow(thin)
+    thin = cv2.bitwise_xor(final, thick)
+    thin = morphology.opening(thin)
+    """pyplot.imshow(thick)
+    pyplot.show()
+    pyplot.imshow(thin)
+    pyplot.show()"""
+    """pyplot.imshow(final)
     pyplot.title(filename)
     pyplot.show()"""
+
 
     result_dir = "/images"
     if result_dir not in os.getcwd():
         os.chdir(".." + result_dir)
-    cv2.imwrite(filename, thin)
+    cv2.imwrite(filename, final)
 
 
     #break
