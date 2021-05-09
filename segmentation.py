@@ -1,55 +1,58 @@
+import re
+import sys
+import getopt
 from os import listdir
 from numpy import asarray
 import numpy as np
 import cv2
 from matplotlib import image
-from matplotlib import pyplot
-import re
 from skimage import filters
-from sklearn import preprocessing
 from skimage import morphology
 from skimage import exposure
-from skimage import restoration
-import os
-import math
 
-import widthMeasures
-import classification
+import os
+
 
 def my_preprocessing(img):
     """Green channel extraction"""
     img_grey = img[:, :, 1]
     img_mask = img[:, :, 0]
+
+    h, w = img_grey.shape
+
+    """resizing images with width over 2000"""
+    if w > 2000:
+        img_grey, img_mask = resize(img_grey, img_mask)
+
     mask = backgroundMask(img_mask)
-    masked = cv2.bitwise_and(img_grey, mask)
-    clahe = exposure.equalize_adapthist(masked)
-    tophat = morphology.black_tophat(clahe, morphology.disk(8))
-    tophat = matchedFilter(tophat)
-    #normalized = normalization(tophat)
+
+    if w < 900:
+        kernel_blur = (9, 9)
+        kernel_tophat = 8
+    elif w < 1400:
+        kernel_blur = (13, 13)
+        kernel_tophat = 8
+    else:
+        kernel_blur = (19,19)
+        kernel_tophat = 8
+
+    """preprocessing"""
+    blured = cv2.GaussianBlur(img_grey, kernel_blur, 0)
+    masked = cv2.bitwise_and(blured, mask)
+    clahe = exposure.equalize_adapthist(masked, clip_limit=0.01)
+    tophat = morphology.black_tophat(clahe, morphology.disk(kernel_tophat))
 
     return tophat, img_grey.shape
 
-def preprocessingMorphology(img):
-    img_grey = img[:,:,1]
-    #mask = backgroundMask(img_grey)
-    #img_grey = cv2.bitwise_and(img_grey, mask)
-    clahe = exposure.equalize_adapthist(img_grey)
-    """closed = morphology.closing(clahe, morphology.disk(8))
-    open = morphology.opening(closed, morphology.disk(8))
-    preprocessed = cv2.subtract(clahe, open)"""
-    preprocessed = morphology.black_tophat(clahe, morphology.disk(12))
-    normalized = normalization(preprocessed)
-    """median = filters.median(img_grey)
-    preprocessed = morphology.opening(median, morphology.square(5))
-    diff = cv2.subtract(median, img_grey)
-    preprocessed = morphology.black_tophat(preprocessed, morphology.disk(12))
+def resize( img_grey, img_mask):
+    """Resize big image to half of its size"""
+    h = int(img_grey.shape[0] * 0.5)
+    w = int(img_grey.shape[1] * 0.5)
 
-    normalized = normalization(preprocessed)"""
+    img_grey = cv2.resize(img_grey, (w, h), interpolation=cv2.INTER_AREA)
+    img_mask = cv2.resize(img_mask, (w, h), interpolation=cv2.INTER_AREA)
 
-    """pyplot.imshow(clahe)
-    pyplot.show()"""
-
-    return normalized, img_grey.shape
+    return img_grey, img_mask
 
 def normalization(img):
     """normalization"""
@@ -61,17 +64,14 @@ def normalization(img):
 
 
 def backgroundMask(inputImg):
-
+    """mask of region of interest"""
     ret, th = cv2.threshold(inputImg, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
     th = morphology.closing(th, morphology.square(20))
 
-    """pyplot.imshow(th)
-    pyplot.show()"""
-
-    result_dir = "/results/DRIVE/masks"
+    """result_dir = "/results/DRIVE/masks"
     if result_dir not in os.getcwd():
         os.chdir("." + result_dir)
-    cv2.imwrite(filename, th)
+    cv2.imwrite(filename, th)"""
     return th
 
 
@@ -85,114 +85,161 @@ def kmeans(img, grey_shape, k):
     retval, labels, centers = cv2.kmeans(vectorized, k, None, criteria, attempts, cv2.KMEANS_RANDOM_CENTERS)
     centers = np.uint8(centers)
     segmented_data = centers[labels.flatten()]
-    segmented_image = segmented_data.reshape((grey_shape))
-    return segmented_image, centers, labels
+    segmented = segmented_data.reshape(grey_shape)
 
-def postprocessing(img):
-    """Post processing"""
-    segmented_image1 = cv2.medianBlur(img, 3)
-    segmented_image2 = cv2.GaussianBlur(segmented_image1, (5, 5), 0)
-    mask0 = np.ones((3, 3), np.uint8)
-    final = morphology.opening(segmented_image2, mask0)
-    """pyplot.imshow(final)
-    pyplot.show()"""
+    return segmented, centers, labels
 
-    T = math.ceil(np.mean(final))
-    ret, th = cv2.threshold(final, T, 255, cv2.THRESH_BINARY)
-    th = morphology.opening(th)
-    return th
 
-def matchedFilter(img):
-    s = 1.5 #sigma
-    L = 7 #lenght of piecewise element
-
-    out = np.zeros(img.shape)
-
-    m = max(math.ceil(3*s), (L-1)/2)
-    x_val = np.arange(-m, m)
-    y_val = np.arange(-m, m)
-    [x,y] = np.meshgrid(x_val, y_val)
-
-    for l in range(1, 13):
-        theta = 15 * (l - 1)
-        angle = theta / 180 * math.pi #in radians
-        u = math.cos(angle)*x - math.sin(angle)*y
-        v = math.sin(angle)*x + math.cos(angle)*y
-        N = (abs(u) <= 3*s) & (abs(v) <= L/2) #domain
-        k = np.exp((-u ** 2) / (2 * s ** 2)) #kernel
-        k = k - np.mean(k[N]) #y K:(x, y) = K,(x, y) - m, m, =sum K,(x, y)/A
-        #k[not N] = 0 # set kernel outside of domain to 0
-        #print(k)
-        res = cv2.filter2D(img, ddepth=-1, kernel=k, borderType=cv2.BORDER_CONSTANT)
-        out = np.maximum(out, res)
-
-    return out
 
 def thickVessels(img, centers, shape):
-
+    """extraction of thin vessels"""
     sort = np.sort(centers.flatten())
-    """T = int(centers[-2]) - 1
-    ret, th = cv2.threshold(img, T, 255, cv2.THRESH_BINARY)"""
-
     senior_class1 = sort[-1]
-    thick = np.where(segmented_image == senior_class1, 255, segmented_image)
+    thick = np.where(img == senior_class1, 255, img)
     thick = np.where(thick == 255, thick, 0)
 
-    #clean = classification.reduceNoise(thick)
-    clean = morphology.dilation(thick)
-    opened = morphology.opening(clean, morphology.square(3))
-    #opened = morphology.erosion(opened)
+    opened = morphology.opening(thick, morphology.square(3))
 
     return opened
 
-def thinVessels(img, centers, shape):
-    frangis = filters.frangi(img, sigmas=(0.5, 2.5, 0.5), alpha=0.5, beta=15, black_ridges=False)
+def segmentation(img, shape):
+    """segmentation of all vessels"""
+    img = morphology.opening(img, morphology.square(3))
+    frangis = filters.frangi(img, sigmas=(0.2, 2.7, 0.5), alpha=0.5, beta=15, gamma=15, black_ridges=False)
     frangis = normalization(frangis)
     frangis = frangis.reshape(shape)
     frangis = frangis.astype("uint8")
-    ret, th = cv2.threshold(frangis, 1, 255, cv2.THRESH_BINARY)
 
-    pyplot.imshow(th)
-    pyplot.show()
+    t = filters.threshold_mean(frangis)
+    ret, th = cv2.threshold(frangis, t, 255, cv2.THRESH_BINARY)
 
-    image = morphology.closing(th)
-    image = morphology.opening(image)
-    pyplot.imshow(image)
-    pyplot.show()
-
+    image = morphology.opening(th, morphology.square(3))
+    image = morphology.closing(image, morphology.square(3))
     return image
 
-
-path = './data/DRIVE/test/images/'
-
-for filename in listdir(path):
+def creteSubDirs(outputfile):
     try:
-        img_data = image.imread(path + filename)
-    except:
-        os.chdir("../../../")
-        img_data = image.imread(path + filename)
+        os.mkdir(outputfile + "images")
+        os.mkdir(outputfile + "thin")
+        os.mkdir(outputfile + "thick")
+    except OSError:
+        print("Creation of result dir failed")
+        exit(-1)
+def createResultDir(outputfile):
+    try:
+        os.mkdir(outputfile)
+    except OSError:
+        print("Creation of result dir failed")
+        exit(-1)
+    creteSubDirs(outputfile)
 
-    prepocessed, grey_shape = my_preprocessing(img_data)
-    segmented_image, centers, labels = kmeans(prepocessed, grey_shape, 3)
-    thick = thickVessels(segmented_image, centers, grey_shape)
-    segmented_image1, centers1, labels1 = kmeans(prepocessed, grey_shape, 10)
-    final = thinVessels(segmented_image1, centers1, grey_shape)
+def main(argv):
+    inputfile = ''
+    outputfile = ''
+    try:
+        opts, args = getopt.getopt(argv, "hi:o:",["ifile=","ofile="])
+    except getopt.GetoptError:
+        print('segmentation.py -i <inputDir> -o <outputDir>')
+        print("<inputDir> - contains images of retina")
+        print("<outputDir> - will contain directories with results")
+        print("if <outputDir> is not provided, \"results\" directory will be created in the <inputDir> directory")
+        exit(2)
 
-    thin = cv2.bitwise_xor(final, thick)
-    thin = morphology.opening(thin)
-    """pyplot.imshow(thick)
-    pyplot.show()
-    pyplot.imshow(thin)
-    pyplot.show()"""
-    """pyplot.imshow(final)
-    pyplot.title(filename)
-    pyplot.show()"""
+    for opt, arg in opts:
+        if opt == '-h':
+            print('test.py -i <inputDir> -o <outputDir>')
+            print("<inputDir> - contains images of retina")
+            print("<outputDir> - will contain directories with results")
+            print("if <outputDir> is not provided, \"results\" directory will be created in the <inputDir> directory")
+            sys.exit()
+
+        elif opt in ("-i", "--ifile"):
+            inputfile = arg
+            if inputfile[0] == ".":
+                inputfile = os.getcwd() + inputfile[1:]
+
+            if not os.path.exists(inputfile):
+                print("Input directory does not exist")
+                exit(-1)
+
+            if not os.path.isdir(inputfile):
+                print("Input directory is not a dir")
+                exit(-1)
+
+            if inputfile[-1] != "/":
+                inputfile = inputfile + "/"
+
+        elif opt in ("-o", "--ofile"):
+            outputpath = arg
+            if outputpath[0] == ".":
+                outputpath = os.getcwd() + outputpath[1:]
+
+            if not os.path.exists(outputpath):
+                print("Output directory does not exist")
+                exit(-1)
+
+            if not os.path.isdir(outputpath):
+                print("Output directory is not a dir")
+                exit(-1)
+
+            if outputpath[-1] != "/":
+                outputpath = outputpath + "/"
+
+            outputfile = outputpath + "results/"
+            if not os.path.exists(outputfile):
+                createResultDir(outputfile)
+
+    if not inputfile:
+        print('segmentation.py -i <inputDir> -o <outputDir>')
+        print("<inputDir> - contains images of retina")
+        print("<outputDir> - will contain directories with results")
+        print("if <outputDir> is not provided, \"results\" directory will be created in the <inputDir> directory")
+        exit(1)
+
+    if not outputfile:
+        os.chdir(inputfile)
+        outputpath = os.getcwd()
+        outputfile = outputpath + "/results/"
+        if not os.path.exists(outputfile):
+            createResultDir(outputfile)
 
 
-    result_dir = "/images"
-    if result_dir not in os.getcwd():
-        os.chdir(".." + result_dir)
-    cv2.imwrite(filename, final)
+    for filename in listdir(inputfile):
+        if os.path.isdir(inputfile + filename):
+            continue
+        try:
+            img_data = image.imread(inputfile + filename)
+        except:
+            print("Cannot load image in this directory: " + inputfile + filename)
+            exit(-1)
 
+        prepocessed, grey_shape = my_preprocessing(img_data)
+        segmented_image, centers, labels = kmeans(prepocessed, grey_shape, 3)
+        thick = thickVessels(segmented_image, centers, grey_shape)
+        segmented_image1, centers1, labels1 = kmeans(prepocessed, grey_shape, 10)
+        final = segmentation(segmented_image1, grey_shape)
 
-    #break
+        thin = cv2.bitwise_xor(final, thick)
+        thin = morphology.opening(thin)
+
+        result_dir = outputfile + "images"
+        thick_dir = "thick"
+        thin_dir = "thin"
+
+        os.chdir(result_dir)
+        cv2.imwrite(filename, final) #+ ".png"
+        img_number = re.findall(r'\d+', filename)
+
+        if thick_dir not in os.getcwd():
+            os.chdir("..")
+            os.chdir(thick_dir)
+        cv2.imwrite(img_number[0] + "_thick.png", thick)
+
+        if thin_dir not in os.getcwd():
+            os.chdir("..")
+            os.chdir(thin_dir)
+        cv2.imwrite(img_number[0] + "_thin.png", thin)
+        #break
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
